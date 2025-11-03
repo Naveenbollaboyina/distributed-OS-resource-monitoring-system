@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  # 1. The Database Service
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: monitoring_db
+    restart: always
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    ports:
+      - "5433:5432" # Expose DB port to your host machine
+    volumes:
+      - monitoring_db_data:/var/lib/postgresql/data
+      - ./db_init:/docker-entrypoint-initdb.d # Runs our init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. The Message Queue Service
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: monitoring_mq
+    restart: always
+    ports:
+      - "5672:5672" # Port for our app
+      - "15672:15672" # Web management UI (user: guest, pass: guest)
+    volumes:
+      - monitoring_mq_data:/var/lib/rabbitmq
+
+  # 3. Our FastAPI Application Service
+  api:
+    build: . # Build from the Dockerfile in this directory
+    container_name: monitoring_api
+    restart: always
+    depends_on:
+      timescaledb:
+        condition: service_healthy # Wait for DB to be ready
+      rabbitmq:
+        condition: service_started # Wait for MQ to start
+    ports:
+      - "8000:8000" # Expose API port
+    volumes:
+      - ./src:/app/src # Mount our code folder into the container
+
+    # --- ADD THIS LINE ---
+    # This injects your .env file into the container
+    env_file:
+      - ./.env
+
+    # --- CHANGE THIS COMMAND ---
+    # This fixes the Python import error
+    command: >
+      sh -c "python -m src.worker &  # Start worker as a module
+             uvicorn src.main:app --host 0.0.0.0 --port 8000" # Start API
+volumes:
+  monitoring_db_data:
+  monitoring_mq_data:
